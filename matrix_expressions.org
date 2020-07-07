@@ -135,3 +135,148 @@ dim.matrix_expr <- function(x) {
 
 ** Meta-Programming Parsing 
 
+Given an expression that doesn't use the m function, we can transform it into one that does like this 
+
+#+BEGIN_SRC R :post round-tbl[:colnames yes](*this*)
+build_matrix_expr <- function(expr) {
+    if (is.name(expr)) {
+        return(substitute(m(name), list(name = expr)))
+    }
+
+    if (is.call(expr)) {
+        if (expr[[1]] == as.name("(")) return(build_matrix_expr(expr[[2]]))
+        if (expr[[1]] == as.name("*") ||
+            expr[[1]] == as.name("%*%")) {
+            return(call("*",
+                        build_matrix_expr(expr[[2]]),
+                        build_matrix_expr(expr[[3]])))
+        }
+        if (expr[[1]] == as.name("+")) {
+            return(call("+",
+                        build_matrix_expr(expr[[2]]),
+                        build_matrix_expr(expr[[3]])))
+        }
+    }
+
+    stop(paste("Parse error for", expr))
+}
+
+# we need a quoted expression for this to work so R doesn't try to evaluate it before we manipulate it
+build_matrix_expr(quote(A * B))
+
+parse_matrix_expr <- function(expr) {
+    expr <- substitute(expr)
+    build_matrix_expr(expr)
+}
+
+parse_matrix_expr(A * B)
+
+# get the quoted expression, build the matrix, and eval in parent frame
+parse_matrix_expr <- function(expr) {
+    expr <- substitute(expr)
+    modified_expr <- build_matrix_expr(expr)
+    eval(modified_expr, parent.frame())
+}
+
+parse_matrix_expr(A * B)
+#+END_SRC
+
+As an alternative, we can build the matrix expression directly using our constructor functions. 
+
+#+BEGIN_SRC R :post round-tbl[:colnames yes](*this*)
+build_matrix_expr <- function(expr, env) {
+    if (is.call(expr)) {
+        if (expr[[1]] == as.name("(")) return(build_matrix_expr(expr[[2]], env))
+        if (expr[[1]] == as.name("*") ||
+            expr[[1]] == as.name("%*%"))
+            return(matrix_mult(build_matrix_expr(expr[[2]], env),
+                               build_matrix_expr(expr[[3]], env)))
+        if (expr[[1]] == as.name("+"))
+            return(matrix_sum(build_matrix_expr(expr[[2]], env),
+                              build_matrix_expr(expr[[3]], env)))
+    }
+    data_matrix <- m(eval(expr, env))
+    attr(data_matrix, "def_expr") <- deparse(expr)
+    data_matrix
+}
+
+parse_matrix_expr <- function(expr) {
+    expr <- substitute(expr)
+    build_matrix_expr(expr, parent.frame())
+}
+
+parse_matrix_expr(A * B + C + matrix(1, nrow = 10, ncol = 10))
+#+END_SRC
+
+** Expression Manipulation 
+
+A template that doesn't do anything yet would look like this: 
+
+#+BEGIN_SRC R :post round-tbl[:colnames yes](*this*)
+rearrange_matrix_expr <- function(expr) {
+    UseMethod("rearrange_matrix_expr")
+}
+
+rearrange_matrix_expr.matrix_data <- function(expr) {
+    expr
+}
+
+rearrange_matrix_expr.matrix_mult <- function(expr) {
+    matrix_mult(rearrange_matrix_expr(expr$left),
+                rearrange_matrix_expr(expr$right))
+}
+
+rearrange_matrix_expr.matrix_sum <- function(expr) {
+    matrix_sum(rearrange_matrix_expr(expr$left),
+               rearrange_matrix_expr(expr$right))
+}
+#+END_SRC
+
+** Optimizing Multiplication 
+
+In the following implementation, we assume that we have a list of matrices as input. We collect their dimensions into a table, dims, for easy access. Then we create a table to represent the values and fill it using the previous equation. Once we have filled the table, we backtrack through it to work out the optimal way to multiply together the matrices from 1 to n, given the dimensions, table, and matrices 
+
+#+BEGIN_SRC R :post round-tbl[:colnames yes](*this*)
+arrange_optimal_matrix_mult <- function(matrices) {
+    n <- length(matrices)
+    dims <- matrix(0, nrow = n, ncol = 2)
+
+    for (i in seq_along(matrices)) {
+        dims[i, ] <- dim(matrices[[i]])
+    }
+
+    N <- matrix(0, nrow = n, ncol = n)
+
+    for (len in 2:n) {
+        for (i in 1:(n - len + 1)) {
+            j <- i + len - 1
+            k <- i:(j - 1)
+            N[i, j] <- min(dims[i, 1] *
+                           dims[k, 2] *
+                           dims[j, 2] +
+                           N[i, k] +
+                           N[k + 1, j])
+        }
+    }
+    # backtrack through the table 
+    backtrack_matrix_mult(1, n, dims, N, matrices)
+}
+
+backtrack_matrix_mult <- function(i, j, dims, N, matrices) {
+    if (i == j) {
+        matrices[[i]]
+    } else {
+        k <- i:(j - 1)
+        candidates <- dims[i, 1] * dims[k, 2] * dims[j, 2] + N[i, k] + N[k + 1, j]
+        N[k + 1, j]
+        split <- k[which(N[i, j] == candidates)][1]
+        left <- backtrack_matrix_mult(i, split, dims, N, matrices)
+        right <- backtrack_matrix_mult(split + 1, j, dims, N, matrices)
+        matrix_mult(left, right)
+    }
+}
+#+END_SRC
+
+** Expression Rewriting 
+
+
